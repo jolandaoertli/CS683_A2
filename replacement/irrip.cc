@@ -1,0 +1,58 @@
+#include "cache.h"
+
+#define maxRRPV 3
+uint32_t l2_rrpv[L2C_SET][L2C_WAY];
+
+// initialize replacement state
+void CACHE::l2c_initialize_replacement()
+{
+    cout << "Initialize SRRIP state for L2C" << endl;
+
+    for (int i=0; i<L2C_SET; i++) {
+        for (int j=0; j<L2C_WAY; j++) {
+            l2_rrpv[i][j] = maxRRPV;
+        }
+    }
+}
+
+#ifndef IRRIP_INSTR_INSERT
+#define IRRIP_INSTR_INSERT 1 //RRPV for a instruction line
+#endif
+#ifndef IRRIP_DATA_INSERT
+#define IRRIP_DATA_INSERT 2 //RRPV for a data line
+#endif
+
+// find replacement victim
+uint32_t CACHE::l2c_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type)
+{
+    // look for the maxRRPV line
+    while (1)
+    {
+        for (int i=0; i<L2C_WAY; i++)
+            if (l2_rrpv[set][i] == maxRRPV)
+                return i;
+
+        for (int i=0; i<L2C_WAY; i++)
+            l2_rrpv[set][i]++;
+    }
+
+    // WE SHOULD NOT REACH HERE
+    assert(0);
+    return 0;
+}
+
+// called on every cache hit and cache fill
+void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit, uint8_t isInstruction)
+{
+    if(hit) {
+        l2_rrpv[set][way] = 0;
+    } else {
+        l2_rrpv[set][way] = isInstruction ? IRRIP_INSTR_INSERT : IRRIP_DATA_INSERT;
+    } 
+}
+
+// use this function to print out your own stats at the end of simulation
+void CACHE::l2c_replacement_final_stats()
+{
+
+}
