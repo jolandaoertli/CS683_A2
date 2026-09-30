@@ -5,7 +5,7 @@ uint32_t l2_rrpv[L2C_SET][L2C_WAY];
 uint8_t  l2_is_instr[L2C_SET][L2C_WAY];
 uint8_t  l2_age_toggle[L2C_SET];
 #ifndef IRRIP_INSTR_INSERT
-#define IRRIP_INSTR_INSERT 0 //RRPV for a instruction line
+#define IRRIP_INSTR_INSERT 2 //RRPV for a instruction line
 #endif
 #ifndef IRRIP_DATA_INSERT
 #define IRRIP_DATA_INSERT 3 //RRPV for a data line
@@ -74,8 +74,13 @@ uint32_t CACHE::l2c_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, c
         //instruction lines age every age period
         l2_age_toggle[set] = (l2_age_toggle[set] + 1) % IRRIP_INSTR_AGE_PERIOD;
         bool age_instr = (l2_age_toggle[set] == 0);
+        bool all_instr = true;
+        for(int i = 0; i < L2C_WAY; i++){
+            if(!l2_is_instr[set][i]){ all_instr = false; break; }
+        }
+        if(all_instr) age_instr = true;
         for(int i=0; i<L2C_WAY; i++){
-            if(!l2_is_instr[set][i] || l2_age_toggle[set]){
+            if(!l2_is_instr[set][i] || age_instr){
                 l2_rrpv[set][i]++;
             }
         }
@@ -90,8 +95,8 @@ uint32_t CACHE::l2c_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, c
 void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit, uint8_t isInstruction)
 {
     bool code = is_code(type, isInstruction);
-    l2_is_instr[set][way] = code ? 1 : 0;
     if(hit) {
+        if(code) l2_is_instr[set][way] = 1;
         if(type == WRITEBACK && !IRRIP_WB_HIT_PROMOTE){
             return;
         }
@@ -101,6 +106,7 @@ void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t wa
             l2_rrpv[set][way] = IRRIP_DATA_HIT;
         }
     } else {
+        l2_is_instr[set][way] = code ? 1 : 0;
         l2_rrpv[set][way] = code ? IRRIP_INSTR_INSERT : IRRIP_DATA_INSERT;
     }
 }

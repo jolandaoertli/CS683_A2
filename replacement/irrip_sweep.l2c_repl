@@ -1,0 +1,185 @@
+#include "cache.h"
+#include <cstdlib>
+
+#define maxRRPV 3
+
+
+#ifndef IRRIP_INS_ON
+#define IRRIP_INS_ON 1
+#endif
+#ifndef IRRIP_PROM_ON
+#define IRRIP_PROM_ON 1
+#endif
+#ifndef IRRIP_EVI_ON
+#define IRRIP_EVI_ON 1
+#endif
+#ifndef IRRIP_INSTR_INSERT
+#define IRRIP_INSTR_INSERT 1
+#endif
+#ifndef IRRIP_DATA_INSERT
+#define IRRIP_DATA_INSERT 2
+#endif
+#ifndef IRRIP_INSTR_HIT
+#define IRRIP_INSTR_HIT 0
+#endif
+#ifndef IRRIP_DATA_HIT
+#define IRRIP_DATA_HIT 1
+#endif
+#ifndef IRRIP_AGE_PERIOD
+#define IRRIP_AGE_PERIOD 2
+#endif
+#ifndef IRRIP_DATA_FIRST
+#define IRRIP_DATA_FIRST 1
+#endif
+#ifndef IRRIP_WB_PROMOTE
+#define IRRIP_WB_PROMOTE 0
+#endif
+#ifndef IRRIP_ITLB
+#define IRRIP_ITLB 0
+#endif
+
+static int P_INS_ON, P_PROM_ON, P_EVI_ON, P_INSTR_INSERT, P_DATA_INSERT, P_INSTR_HIT,
+           P_DATA_HIT, P_AGE_PERIOD, P_DATA_FIRST, P_WB_PROMOTE, P_ITLB;
+
+uint32_t l2_rrpv[L2C_SET][L2C_WAY];
+uint8_t  l2_is_instr[L2C_SET][L2C_WAY];
+uint8_t  l2_age_ctr[L2C_SET];
+
+static uint64_t st_fill_i = 0, st_fill_d = 0, st_hit_i = 0, st_hit_d = 0;
+static uint64_t st_evict_i = 0, st_evict_d = 0;
+
+static int knob(const char *name, int def, int lo, int hi)
+{
+    const char *s = getenv(name);
+    int v = s ? atoi(s) : def;
+    if (v < lo || v > hi) {
+        cerr << "[I-RRIP] " << name << "=" << v << " out of range [" << lo << "," << hi << "]" << endl;
+        exit(1);
+    }
+    return v;
+}
+
+static void irrip_print_stats()
+{
+    static bool done = false;
+    if (done) return;
+    done = true;
+    cout << endl << "IRRIP fills_instr: " << st_fill_i << " fills_data: " << st_fill_d
+         << " hits_instr: " << st_hit_i << " hits_data: " << st_hit_d
+         << " evict_instr: " << st_evict_i << " evict_data: " << st_evict_d << endl;
+}
+
+static inline bool is_code(uint32_t type, uint8_t instruction)
+{
+    if (!instruction) return false;
+    if (type == LOAD || type == PREFETCH) return true;
+    return P_ITLB && (type == LOAD_TRANSLATION || type == PREFETCH_TRANSLATION);
+}
+
+void CACHE::l2c_initialize_replacement()
+{
+    P_INS_ON       = knob("IRRIP_INS_ON",       IRRIP_INS_ON,       0, 1);
+    P_PROM_ON      = knob("IRRIP_PROM_ON",      IRRIP_PROM_ON,      0, 1);
+    P_EVI_ON       = knob("IRRIP_EVI_ON",       IRRIP_EVI_ON,       0, 1);
+    P_INSTR_INSERT = knob("IRRIP_INSTR_INSERT", IRRIP_INSTR_INSERT, 0, maxRRPV);
+    P_DATA_INSERT  = knob("IRRIP_DATA_INSERT",  IRRIP_DATA_INSERT,  0, maxRRPV);
+    P_INSTR_HIT    = knob("IRRIP_INSTR_HIT",    IRRIP_INSTR_HIT,    0, maxRRPV);
+    P_DATA_HIT     = knob("IRRIP_DATA_HIT",     IRRIP_DATA_HIT,     0, maxRRPV);
+    P_AGE_PERIOD   = knob("IRRIP_AGE_PERIOD",   IRRIP_AGE_PERIOD,   1, 255);
+    P_DATA_FIRST   = knob("IRRIP_DATA_FIRST",   IRRIP_DATA_FIRST,   0, 1);
+    P_WB_PROMOTE   = knob("IRRIP_WB_PROMOTE",   IRRIP_WB_PROMOTE,   0, 1);
+    P_ITLB         = knob("IRRIP_ITLB",         IRRIP_ITLB,         0, 1);
+
+    cout << "IRRIP_CONFIG ins_on=" << P_INS_ON << " prom_on=" << P_PROM_ON << " evi_on=" << P_EVI_ON
+         << " instr_insert=" << P_INSTR_INSERT << " data_insert=" << P_DATA_INSERT
+         << " instr_hit=" << P_INSTR_HIT << " data_hit=" << P_DATA_HIT
+         << " age_period=" << P_AGE_PERIOD << " data_first=" << P_DATA_FIRST
+         << " wb_promote=" << P_WB_PROMOTE << " itlb=" << P_ITLB << endl;
+
+    for (int i = 0; i < L2C_SET; i++) {
+        l2_age_ctr[i] = 0;
+        for (int j = 0; j < L2C_WAY; j++) {
+            l2_rrpv[i][j] = maxRRPV;
+            l2_is_instr[i][j] = 0;
+        }
+    }
+    atexit(irrip_print_stats);
+}
+
+uint32_t CACHE::l2c_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type)
+{
+    if (!P_EVI_ON) {
+        while (1) {
+            for (int i = 0; i < L2C_WAY; i++)
+                if (l2_rrpv[set][i] == maxRRPV) {
+                    if (warmup_complete[cpu]) { if (l2_is_instr[set][i]) st_evict_i++; else st_evict_d++; }
+                    return i;
+                }
+            for (int i = 0; i < L2C_WAY; i++)
+                l2_rrpv[set][i]++;
+        }
+    }
+
+    for (int i = 0; i < L2C_WAY; i++)
+        if (!current_set[i].valid)
+            return i;
+
+    int rounds = 0;
+    while (1) {
+        for (int i = 0; i < L2C_WAY; i++)
+            if (l2_rrpv[set][i] == maxRRPV && (!P_DATA_FIRST || !l2_is_instr[set][i])) {
+                if (warmup_complete[cpu]) { if (l2_is_instr[set][i]) st_evict_i++; else st_evict_d++; }
+                return i;
+            }
+        for (int i = 0; i < L2C_WAY; i++)
+            if (l2_rrpv[set][i] == maxRRPV) {
+                if (warmup_complete[cpu]) st_evict_i++;
+                return i;
+            }
+        l2_age_ctr[set] = (l2_age_ctr[set] + 1) % P_AGE_PERIOD;
+        bool age_instr = (l2_age_ctr[set] == 0);
+        bool all_instr = true;
+        for (int i = 0; i < L2C_WAY; i++)
+            if (!l2_is_instr[set][i]) { all_instr = false; break; }
+        if (all_instr) age_instr = true;
+        for (int i = 0; i < L2C_WAY; i++)
+            if (!l2_is_instr[set][i] || age_instr)
+                l2_rrpv[set][i]++;
+
+        if (++rounds > maxRRPV * P_AGE_PERIOD + 1) {
+            cerr << "[I-RRIP] victim search did not converge, set " << set << endl;
+            assert(0);
+        }
+    }
+}
+
+void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit, uint8_t isInstruction)
+{
+    bool code = is_code(type, isInstruction);
+
+    if (hit) {
+        if (code) l2_is_instr[set][way] = 1;
+        if (warmup_complete[cpu]) { if (l2_is_instr[set][way]) st_hit_i++; else st_hit_d++; }
+
+        if (!P_PROM_ON) {
+            l2_rrpv[set][way] = 0;
+            return;
+        }
+        if (type == WRITEBACK && !P_WB_PROMOTE)
+            return;
+        l2_rrpv[set][way] = l2_is_instr[set][way] ? P_INSTR_HIT : P_DATA_HIT;
+    } else {
+        l2_is_instr[set][way] = code ? 1 : 0;
+        if (warmup_complete[cpu]) { if (code) st_fill_i++; else st_fill_d++; }
+
+        if (!P_INS_ON)
+            l2_rrpv[set][way] = maxRRPV - 1;
+        else
+            l2_rrpv[set][way] = code ? P_INSTR_INSERT : P_DATA_INSERT;
+    }
+}
+
+void CACHE::l2c_replacement_final_stats()
+{
+    irrip_print_stats();
+}
