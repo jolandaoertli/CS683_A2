@@ -33,14 +33,24 @@ uint8_t  l2_age_toggle[L2C_SET];
 #define DYN_LEADERS 32
 #endif
 #ifndef EPOCH
-#define EPOCH 128
+#define EPOCH 16
 #endif
 #ifndef DYN_THRESH
-#define DYN_THRESH 25
+#define DYN_THRESH 5
 #endif
+//mode 2
+#ifndef DYN_MODE
+#define DYN_MODE 1
+#endif
+#ifndef IMISS_WEIGHT
+#define IMISS_WEIGHT 2
+#endif
+#define PSEL_MAX 1023
+#define PSEL_MID 512
 
 static uint8_t  irrip_on = 0;
-static uint32_t ins_acc = 0, ins_miss = 0, tot_acc = 0, tot_miss = 0; 
+static uint32_t ins_acc = 0, ins_miss = 0, tot_acc = 0, tot_miss = 0;
+static int      psel = PSEL_MID;
 
 static inline bool is_code(uint32_t type, uint8_t instruction)
 {
@@ -64,7 +74,9 @@ static inline bool is_leader(uint32_t set)
 {
     const uint32_t sets_per_region = L2C_SET / DYN_LEADERS;
     uint32_t region = set / sets_per_region, offset = set % sets_per_region;
-    return (offset == region % sets_per_region);
+    if(offset == region % sets_per_region) return true;
+    if(DYN_MODE == 1 && offset == sets_per_region - 1 - region % sets_per_region) return true;
+    return false;
 }
 
 // initialize replacement state
@@ -152,14 +164,24 @@ void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t wa
 {
     bool code = is_code(type, isInstruction);
     bool srrip = uses_srrip(set);
-    if(type != WRITEBACK && is_leader(set)){
+    if(DYN_MODE == 0 && type != WRITEBACK && is_leader(set)){
         tot_acc++;
         if(code) ins_acc++;
         if(!hit){tot_miss++; if(code) ins_miss++;}
         uint64_t num = ins_acc + ins_miss;
         uint64_t den = tot_acc + tot_miss;
         irrip_on = (num * 100 > (uint64_t)DYN_THRESH * den);
-        ins_acc >>= 1; ins_miss >>= 1; tot_acc >>= 1; tot_miss >>= 1;    
+        if(tot_acc >= EPOCH){
+            ins_acc >>= 1; ins_miss >>= 1; tot_acc >>= 1; tot_miss >>= 1;
+        }   
+    }
+    if(DYN_MODE ==1 && type != WRITEBACK && is_leader(set)){
+        int cost = code ? IMISS_WEIGHT : 1;
+        if(srrip){
+            psel = min(psel + cost, PSEL_MAX);
+        }else{
+            psel = max(psel - cost, 0);
+        }
     }
     if(hit) {
         if(code) l2_is_instr[set][way] = 1;
