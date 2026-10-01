@@ -1,0 +1,192 @@
+#include "cache.h"
+
+#define maxRRPV 3
+
+uint32_t l2_rrpv[L2C_SET][L2C_WAY];
+uint8_t  l2_is_instr[L2C_SET][L2C_WAY];
+uint8_t  l2_age_toggle[L2C_SET];
+
+#ifndef IRRIP_INSTR_INSERT
+#define IRRIP_INSTR_INSERT 2 //RRPV for a instruction line
+#endif
+#ifndef IRRIP_DATA_INSERT
+#define IRRIP_DATA_INSERT 3 //RRPV for a data line
+#endif
+//promotion
+#ifndef IRRIP_INSTR_HIT
+#define IRRIP_INSTR_HIT 0
+#endif
+#ifndef IRRIP_DATA_HIT
+#define IRRIP_DATA_HIT 2
+#endif
+#ifndef IRRIP_WB_HIT_PROMOTE
+#define IRRIP_WB_HIT_PROMOTE 0
+#endif
+#ifndef IRRIP_INSTR_AGE_PERIOD
+#define IRRIP_INSTR_AGE_PERIOD 2
+#endif
+#ifndef IRRIP_PROTECT_ITLB_WALK
+#define IRRIP_PROTECT_ITLB_WALK 0
+#endif
+
+#ifndef DYN_LEADERS
+#define DYN_LEADERS 32
+#endif
+#ifndef EPOCH
+#define EPOCH 128
+#endif
+#ifndef DYN_THRESH
+#define DYN_THRESH 25
+#endif
+
+static uint8_t  irrip_on = 0;
+static uint32_t ins_acc = 0, ins_miss = 0, tot_acc = 0, tot_miss = 0; 
+
+static inline bool is_code(uint32_t type, uint8_t instruction)
+{
+    if(!instruction) return false;
+    if(type == LOAD || type == PREFETCH){
+        return true;
+    }
+    return IRRIP_PROTECT_ITLB_WALK && (type == LOAD_TRANSLATION || type == PREFETCH_TRANSLATION);
+}
+
+static inline bool uses_srrip(uint32_t set)
+{
+    const uint32_t sets_per_region = L2C_SET / DYN_LEADERS;
+    uint32_t region = set / sets_per_region, offset = set % sets_per_region;
+    if(offset == region % sets_per_region) return true;
+    if(irrip_on) return false;
+    return true;
+
+}
+static inline bool is_leader(uint32_t set)
+{
+    const uint32_t sets_per_region = L2C_SET / DYN_LEADERS;
+    uint32_t region = set / sets_per_region, offset = set % sets_per_region;
+    return (offset == region % sets_per_region);
+}
+
+// initialize replacement state
+void CACHE::l2c_initialize_replacement()
+{
+    cout << "Initialize SRRIP state for L2C" << endl;
+
+    for (int i=0; i<L2C_SET; i++) {
+        l2_age_toggle[i] = 0;
+        for (int j=0; j<L2C_WAY; j++) {
+            l2_rrpv[i][j] = maxRRPV;
+            l2_is_instr[i][j] = 0;
+        }
+    }
+}
+
+// find replacement victim
+uint32_t irrip_victim(uint32_t set, const BLOCK *current_set)
+{
+    //find invalid
+    for(int i = 0; i < L2C_WAY; i++){
+        if(!current_set[i].valid){
+            return i;
+        }
+    }
+    // look for the maxRRPV line
+    while (1)
+    {
+        //prefer data over instruction eviction
+        for(int i=0; i<L2C_WAY; i++){
+            if(l2_rrpv[set][i] == maxRRPV && !l2_is_instr[set][i]){
+                return i;
+            }
+        }
+        for (int i=0; i<L2C_WAY; i++)
+            if (l2_rrpv[set][i] == maxRRPV)
+                return i;
+
+        //instruction lines age every age period
+        l2_age_toggle[set] = (l2_age_toggle[set] + 1) % IRRIP_INSTR_AGE_PERIOD;
+        bool age_instr = (l2_age_toggle[set] == 0);
+        bool all_instr = true;
+        for(int i = 0; i < L2C_WAY; i++){
+            if(!l2_is_instr[set][i]){ all_instr = false; break; }
+        }
+        if(all_instr) age_instr = true;
+        for(int i=0; i<L2C_WAY; i++){
+            if(!l2_is_instr[set][i] || age_instr){
+                l2_rrpv[set][i]++;
+            }
+        }
+    }
+
+    // WE SHOULD NOT REACH HERE
+    assert(0);
+    return 0;
+}
+
+uint32_t srrip_victim(uint32_t set)
+{
+    // look for the maxRRPV line
+    while (1)
+    {
+        for (int i=0; i<L2C_WAY; i++)
+            if (l2_rrpv[set][i] == maxRRPV)
+                return i;
+
+        for (int i=0; i<L2C_WAY; i++)
+            l2_rrpv[set][i]++;
+    }
+
+    // WE SHOULD NOT REACH HERE
+    assert(0);
+    return 0;
+}
+
+uint32_t CACHE::l2c_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type)
+{
+
+    return uses_srrip(set) ? irrip_victim(set, current_set) : srrip_victim(set);
+}
+
+// called on every cache hit and cache fill
+void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit, uint8_t isInstruction)
+{
+    bool code = is_code(type, isInstruction);
+    bool srrip = uses_srrip(set);
+    if(type != WRITEBACK && is_leader(set)){
+        tot_acc++;
+        if(code) ins_acc++;
+        if(!hit){tot_miss++; if(code) ins_miss++;}
+        uint64_t num = ins_acc + ins_miss;
+        uint64_t den = tot_acc + tot_miss;
+        irrip_on = (num * 100 > (uint64_t)DYN_THRESH * den);
+        ins_acc >>= 1; ins_miss >>= 1; tot_acc >>= 1; tot_miss >>= 1;    
+    }
+    if(hit) {
+        if(code) l2_is_instr[set][way] = 1;
+        if(srrip){
+            l2_rrpv[set][way] = 0;
+            return;
+        }
+        if(type == WRITEBACK && !IRRIP_WB_HIT_PROMOTE){
+            return;
+        }
+        if(l2_is_instr[set][way]){
+            l2_rrpv[set][way] = IRRIP_INSTR_HIT;
+        }else{
+            l2_rrpv[set][way] = IRRIP_DATA_HIT;
+        }
+    } else {
+        l2_is_instr[set][way] = code ? 1 : 0;
+        if(srrip){
+            l2_rrpv[set][way] = maxRRPV - 1;
+        }else{
+            l2_rrpv[set][way] = code ? IRRIP_INSTR_INSERT : IRRIP_DATA_INSERT;
+        }
+    }
+}
+
+// use this function to print out your own stats at the end of simulation
+void CACHE::l2c_replacement_final_stats()
+{
+
+}
