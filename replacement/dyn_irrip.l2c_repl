@@ -30,7 +30,7 @@ uint8_t  l2_age_toggle[L2C_SET];
 #endif
 
 #ifndef DYN_LEADERS
-#define DYN_LEADERS 32
+#define DYN_LEADERS 16
 #endif
 #ifndef EPOCH
 #define EPOCH 16
@@ -43,10 +43,10 @@ uint8_t  l2_age_toggle[L2C_SET];
 #define DYN_MODE 1
 #endif
 #ifndef IMISS_WEIGHT
-#define IMISS_WEIGHT 2
+#define IMISS_WEIGHT 1
 #endif
-#define PSEL_MAX 1023
-#define PSEL_MID 512
+#define PSEL_MAX 255
+#define PSEL_MID 128
 
 static uint8_t  irrip_on = 0;
 static uint32_t ins_acc = 0, ins_miss = 0, tot_acc = 0, tot_miss = 0;
