@@ -42,9 +42,9 @@
 // initial degree
 #define INITIAL_DEGREE 2
 // accuracy thresholds used by the adaptive degree controller
-#define ACC_HIGH       65
-#define ACC_MID        40
-#define ACC_LOW        20
+#define ACC_HIGH 55
+#define ACC_MID  50
+#define ACC_LOW  20
 
 namespace spp {
 

@@ -1,0 +1,13 @@
+trace,configuration,ipc,speedup,l1d_load_mpki,prefetch_accuracy_percent,l1d_coverage_percent
+Trace1,Baseline,0.232345,1.000000,10.6780,,
+Trace1,IP-stride,0.233452,1.004764,10.1190,52.7133,5.2354
+Trace1,SPP,0.232530,1.000796,10.5193,33.3076,1.4860
+Trace2,Baseline,0.251158,1.000000,13.5379,,
+Trace2,IP-stride,0.251260,1.000406,13.4378,38.1823,0.7396
+Trace2,SPP,0.251097,0.999757,13.5119,28.2994,0.1923
+Trace3,Baseline,0.382065,1.000000,3.40344,,
+Trace3,IP-stride,0.382862,1.002086,3.31816,15.9918,2.5057
+Trace3,SPP,0.382985,1.002408,3.19720,37.3430,6.0598
+Arithmetic average,Baseline,0.288523,1.000000,9.20645,,
+Arithmetic average,IP-stride,0.289191,1.002417,8.95832,35.6291,2.8269
+Arithmetic average,SPP,0.288871,1.000987,9.07613,32.9833,2.5794
