@@ -200,7 +200,12 @@ void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t wa
         }
     } else {
         l2_is_instr[set][way] = code ? 1 : 0;
-        if(srrip){
+
+        // insert prefetches with the lowest priority
+        if (type == PREFETCH) {
+            l2_rrpv[set][way] = maxRRPV;
+        }
+        else if(srrip){
             l2_rrpv[set][way] = maxRRPV - 1;
         }else{
             l2_rrpv[set][way] = code ? IRRIP_INSTR_INSERT : IRRIP_DATA_INSERT;
